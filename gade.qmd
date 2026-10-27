@@ -1,0 +1,349 @@
+---
+title: "Re-analysis of Gade et al. (2021)"
+format:
+  html: default
+author: "Shaheed Azaad"
+toc: true
+embed-resources: true
+---
+
+# Overview
+
+This document contains (1) a minimal reproduction of Gade et al.'s (2021; Journal of cognition) meta-analysis, and (2) a re-analysis based after fixing a critical bug in their control flow.
+
+The main issue is this: the code contains an `if` statement that is supposed to fit models with condition random effects if each study contributes more than one effect. However, there is a bug in the code that means only models without condition random effects were fit, contrary to what is reported in the paper.
+
+To re-run this QMD, place it inside Gade et al.'s OSF folder, found here: https://osf.io/ukjq4/
+
+```{r}
+library(tidyr)
+library("brms")
+library("ggplot2")
+library("bayesplot")
+
+temp <- read.table("Data R2/temp.txt", header=T, sep="\t") # the datafile created by the authors' processing code
+options(mc.cores = 6)
+set.seed(123) # the original code has no seed so numbers wont perfectly reproduce
+```
+
+# Reproducing Gade et al.'s original results
+
+The below code fits models from Gade et al.'s script `analysis_code.R`. I only run the main analyses here (not the moderator tests).
+
+I have made *one* modification to the code. I have added print statements to the relevant code blocks. So, if the model without random effects runs, we will see "WITHOUT CONDITION RANDOM EFFECTS" printed in the output, and if it does, we will see "WITH CONDITION RANDOM EFFECTS" printed.
+
+## Model with interaction
+
+```{r}
+prior <- get_prior(
+  dm ~ 1 +
+    dominance +
+    language_transition +
+    dominance * language_transition +
+    (Condition | Study),
+  temp,
+  family = gaussian(),
+  autocor = NULL,
+  sparse = NULL,
+  internal = TRUE
+)
+
+if (length(temp$dm == 4 * length(unique(temp$Study)))) {
+  print("WITHOUT CONDITION RANDOM EFFECTS")  
+  test <- brm(
+    formula = dm ~ 1 +
+      dominance +
+      language_transition +
+      dominance * language_transition +
+      (1 | Study),
+    data = temp,
+    family = gaussian(),
+    inits = 0,
+
+    prior = c(
+      set_prior("student_t(3, 847.5, 215)", class = "Intercept"),
+      set_prior("normal(0,10)", class = "b"),
+      set_prior("student_t(3, 0, 215)", class = "sd")
+    ),
+    warmup = 1000,
+    iter = 5000,
+    chains = 4,
+    silent = 2,
+    refresh = 0,
+    control = list(adapt_delta = 0.95, max_treedepth = 15), 
+    open_progress = FALSE
+  )
+} else if (length(temp$dm != 4 * length(unique(temp$Study)))) {
+  print("WITH CONDITION RANDOM EFFECTS")  
+  test <- brm(
+    formula = dm ~ 1 +
+      dominance +
+      language_transition +
+      dominance * language_transition +
+      (Condition | Study),
+    data = temp,
+    family = gaussian(),
+    inits = 0,
+
+    prior = c(
+      set_prior("student_t(3, 847.5, 215)", class = "Intercept"),
+      set_prior("normal(0,10)", class = "b"),
+      set_prior("student_t(3, 0, 215)", class = "sd")
+    ),
+    warmup = 1000,
+    iter = 5000,
+    chains = 4,
+    silent = 2,
+    refresh = 0,
+    cores = 4,
+    control = list(adapt_delta = 0.95, max_treedepth = 15)
+  )
+}
+modelwinteraction <- test
+
+# fit criteria
+
+modelwinteraction <- add_criterion(
+  modelwinteraction,
+  c("loo", "waic", "bayes_R2")
+)
+
+modelwinteraction$criteria$waic
+modelwinteraction$criteria$loo
+mean(modelwinteraction$criteria$bayes_R2)
+
+
+#model fit
+pp_check(modelwinteraction, type = "scatter_avg") +
+  geom_abline(intercept = 0, slope = 1, color = "red", lty = 4) # y vs. yrep
+```
+
+## Model without interaction
+
+```{r}
+if (length(temp$dm == 4 * length(unique(temp$Study)))) {
+  print("WITHOUT CONDITION RANDOM EFFECTS")      
+  test <- brm(
+    formula = dm ~ 1 + dominance + language_transition + (1 | Study),
+    data = temp,
+    family = gaussian(),
+    inits = 0,
+
+    prior = c(
+      set_prior("student_t(3, 847.5, 215)", class = "Intercept"),
+      set_prior("normal(0,10)", class = "b"),
+      set_prior("student_t(3, 0, 215)", class = "sd")
+    ),
+    warmup = 1000,
+    iter = 5000,
+    chains = 4,
+    silent = 2,
+    refresh = 0,
+    control = list(adapt_delta = 0.95, max_treedepth = 15), 
+    open_progress = FALSE
+  )
+} else if (length(temp$dm != 4 * length(unique(temp$Study)))) {
+  print("WITH CONDITION RANDOM EFFECTS")      
+  test <- brm(
+    formula = dm ~ 1 + dominance + language_transition + (Condition | Study),
+    data = temp,
+    family = gaussian(),
+    inits = 0,
+    prior = c(
+      set_prior("student_t(3, 847.5, 215)", class = "Intercept"),
+      set_prior("normal(0,10)", class = "b"),
+      set_prior("student_t(3, 0, 215)", class = "sd")
+    ),
+    warmup = 1000,
+    iter = 5000,
+    chains = 4,
+    silent = 2,
+    refresh = 0,
+    cores = 4,
+    control = list(adapt_delta = 0.95, max_treedepth = 15)
+  )
+}
+modelwointeraction <- test
+
+# fit criteria
+
+modelwointeraction <- add_criterion(
+  modelwointeraction,
+  c("loo", "waic", "bayes_R2")
+)
+
+modelwointeraction$criteria$waic
+modelwointeraction$criteria$loo
+mean(modelwointeraction$criteria$bayes_R2)
+
+#model fit
+pp_check(modelwinteraction, type = "scatter_avg") +
+  geom_abline(intercept = 0, slope = 1, color = "red", lty = 4) # y vs. yrep
+```
+
+### Model comparison
+
+```{r}
+loo(modelwinteraction, modelwointeraction)
+```
+
+### Fixed effects
+
+```{r}
+fixef(modelwinteraction)
+```
+
+```{r}
+fixef(modelwointeraction)
+```
+
+## Summary
+
+As in the paper the model without an interaction term fit better. And the credible intervals for switch cost asymmetry and language dominance cross zero.
+
+But as the output shows, there is a bug in the control flow. We can see that the "WITHOUT CONDITION RANDOM EFFECTS" is printed both times. In other words, the model without condition random effects was run.
+
+The issue is in the `if` statements. The below code appears to be written to check if the length of the `dm` (RT) column equals the number of unique studies. If these don't match, it would mean that studies contribute multiple effects.
+
+However, a misplaced parenthesis means that what it *actually* does is compare each value of `dm` to the number of unique studies, and then returns the length of that vector. In this case, 956:
+
+```{r}
+length(temp$dm != 4 * length(unique(temp$Study)))
+```
+
+The correct version is this, which checks whether there are more RTs than studies. It evaluates to `TRUE` as we'd expect.
+
+```{r}
+length(temp$dm) > 4 * length(unique(temp$Study))
+```
+
+In other words, none of these models had random effects for `condition`, which meant that between-condition variability went into the residual. This is a problem not only for the models themselves, but for the paper, which states that there *were* condition random effects.
+
+# After correccting
+
+Here, I re-run the analyses by removing the `if` statement since we know that studies contribute multiple conditions. Note that I do not think this is the best way to analyse the data either, since effects are not weighted by their precision as they should be in a meta-analysis. This re-analysis is just to show the consequence of the bug.
+
+The original code added random effects per condition with `(Condition|Study)` but this doesn't match the article's description for conditions *within* studies.
+
+So I have changed the relevant code to match, adding the following terms: `(1 | Study) + (1 | Study:Condition)`.
+
+## Model with interaction
+
+```{r}
+  test <- brm(
+    formula = dm ~ 1 +
+      dominance +
+      language_transition +
+      dominance * language_transition +
+      (1 | Study) + (1 | Study:Condition),
+    data = temp,
+    family = gaussian(),
+    inits = 0,
+
+    prior = c(
+      set_prior("student_t(3, 847.5, 215)", class = "Intercept"),
+      set_prior("normal(0,10)", class = "b"),
+      set_prior("student_t(3, 0, 215)", class = "sd")
+    ),
+    warmup = 1000,
+    iter = 5000,
+    chains = 4,
+    silent = 2,
+    refresh = 0,
+    control = list(adapt_delta = 0.95, max_treedepth = 15), 
+    open_progress = FALSE
+  )
+
+modelwinteraction <- test
+
+# fit criteria
+
+modelwinteraction <- add_criterion(
+  modelwinteraction,
+  c("loo", "waic", "bayes_R2")
+)
+
+modelwinteraction$criteria$waic
+modelwinteraction$criteria$loo
+mean(modelwinteraction$criteria$bayes_R2)
+
+
+#model fit
+pp_check(modelwinteraction, type = "scatter_avg") +
+  geom_abline(intercept = 0, slope = 1, color = "red", lty = 4) # y vs. yrep
+```
+
+## Model without interaction
+
+```{r}
+  test <- brm(
+    formula = dm ~ 1 + dominance + language_transition +
+      (1 | Study) + (1 | Study:Condition),
+    data = temp,
+    family = gaussian(),
+    inits = 0,
+    prior = c(
+      set_prior("student_t(3, 847.5, 215)", class = "Intercept"),
+      set_prior("normal(0,10)", class = "b"),
+      set_prior("student_t(3, 0, 215)", class = "sd")
+    ),
+    warmup = 1000,
+    iter = 5000,
+    chains = 4,
+    silent = 2,
+    refresh = 0,
+    control = list(adapt_delta = 0.95, max_treedepth = 15), 
+    open_progress = FALSE
+  )
+
+modelwointeraction <- test
+
+# fit criteria
+
+modelwointeraction <- add_criterion(
+  modelwointeraction,
+  c("loo", "waic", "bayes_R2")
+)
+
+modelwointeraction$criteria$waic
+modelwointeraction$criteria$loo
+mean(modelwointeraction$criteria$bayes_R2)
+
+#model fit
+pp_check(modelwinteraction, type = "scatter_avg") +
+  geom_abline(intercept = 0, slope = 1, color = "red", lty = 4) # y vs. yrep
+```
+
+### Model comparison
+
+```{r}
+loo(modelwinteraction, modelwointeraction)
+```
+
+### Fixed effects
+
+```{r}
+fixef(modelwinteraction)
+```
+
+```{r}
+fixef(modelwointeraction)
+```
+
+```{r}
+library(emmeans)
+grid <- list(dominance = c(-1, 1), language_transition = c(-1, 1))
+
+emm <- emmeans(modelwinteraction, ~ language_transition | dominance, at = grid)
+emm
+
+sc <- contrast(emm, method = list(switch_cost = c(-1, 1)))
+sc
+contrast(sc, method = list(asymmetry = c(1, -1)), by = NULL)
+```
+
+## Summary
+
+The fit flips: the model *with* interaction fits better now. And the relevant coefficients' credible intervals no longer include zero. The posterior predictive checks look a lot better, too.
+
+The coefficients are, of course, not the actual RT differences because of the -1/+1 coding. The emmeans output suggests that the asymmetry is around 13ms.
